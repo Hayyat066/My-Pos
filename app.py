@@ -4,8 +4,9 @@ app.py
 My Shop POS — Remote Monitoring Dashboard
 
 Reads read-only summary data from Supabase (sales totals, inventory,
-bank balances, profit & loss) and shows it in a simple, password
-protected web page you can open from any phone or computer browser.
+bank balances, profit & loss, advance bookings) and shows it in a
+simple, password protected web page you can open from any phone or
+computer browser.
 
 No customer names/numbers or bank account details are ever shown here,
 because they're never sent to the cloud in the first place.
@@ -17,6 +18,30 @@ import pandas as pd
 from datetime import datetime
 
 st.set_page_config(page_title="My Shop POS - Remote Dashboard", page_icon="🏪", layout="wide")
+
+# ---------------------------------------------------------------------------
+# Attractive theme (custom CSS on top of Streamlit's dark theme in
+# .streamlit/config.toml)
+# ---------------------------------------------------------------------------
+st.markdown("""
+<style>
+    .stApp { background: linear-gradient(180deg, #0f2027 0%, #203a43 50%, #2c5364 100%); }
+    div[data-testid="stMetric"] {
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 14px;
+        padding: 14px 18px;
+    }
+    div[data-testid="stMetricValue"] { color: #4dd0e1; }
+    h1, h2, h3 { color: #f0f4f8; }
+    .stDataFrame { border-radius: 12px; overflow: hidden; }
+    div[data-testid="stExpander"] {
+        background: rgba(255,255,255,0.05);
+        border-radius: 14px;
+        border: 1px solid rgba(255,255,255,0.1);
+    }
+</style>
+""", unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +70,7 @@ if not check_password():
 
 
 # ---------------------------------------------------------------------------
-# Supabase read-only fetch (uses the public anon key — safe, RLS blocks writes)
+# Supabase read-only fetch (uses the public/publishable key — safe, RLS blocks writes)
 # ---------------------------------------------------------------------------
 SUPABASE_URL = st.secrets["SUPABASE_URL"].rstrip("/")
 SUPABASE_ANON_KEY = st.secrets["SUPABASE_ANON_KEY"]
@@ -70,45 +95,49 @@ if st.button("🔄 Refresh Now"):
     st.cache_data.clear()
 
 # ---------------------------------------------------------------------------
-# Profit & Loss cards
+# Profit & Loss — hidden by default, click to expand
 # ---------------------------------------------------------------------------
-st.subheader("📈 Profit & Loss")
-pl_df = fetch("profit_loss_summary")
-if not pl_df.empty:
-    cols = st.columns(len(pl_df))
-    for col, (_, row) in zip(cols, pl_df.iterrows()):
-        with col:
-            st.metric(row["period_label"],
-                      f"PKR {row['net_profit']:,.0f}",
-                      f"Sales profit PKR {row['sales_profit']:,.0f} / Expenses PKR {row['expenses']:,.0f}")
-else:
-    st.info("No profit & loss data yet — sync from the shop computer first.")
+with st.expander("📈 Profit & Loss — click to view", expanded=False):
+    pl_df = fetch("profit_loss_summary")
+    if not pl_df.empty:
+        cols = st.columns(len(pl_df))
+        for col, (_, row) in zip(cols, pl_df.iterrows()):
+            with col:
+                st.metric(row["period_label"],
+                          f"PKR {row['net_profit']:,.0f}",
+                          f"Sales profit PKR {row['sales_profit']:,.0f} / Expenses PKR {row['expenses']:,.0f}")
+    else:
+        st.info("No profit & loss data yet — sync from the shop computer first.")
 
 st.divider()
 
 # ---------------------------------------------------------------------------
-# Sales trend + Recent sales
+# Sales trend
 # ---------------------------------------------------------------------------
-left, right = st.columns([2, 1])
+st.subheader("💰 Sales Trend")
+daily_df = fetch("daily_sales", order="sale_date.asc")
+if not daily_df.empty:
+    daily_df["sale_date"] = pd.to_datetime(daily_df["sale_date"])
+    st.line_chart(daily_df.set_index("sale_date")[["total_sales", "total_profit"]])
+else:
+    st.info("No sales data yet.")
 
-with left:
-    st.subheader("💰 Sales Trend")
-    daily_df = fetch("daily_sales", order="sale_date.asc")
-    if not daily_df.empty:
-        daily_df["sale_date"] = pd.to_datetime(daily_df["sale_date"])
-        st.line_chart(daily_df.set_index("sale_date")[["total_sales", "total_profit"]])
-    else:
-        st.info("No sales data yet.")
+st.divider()
 
-with right:
-    st.subheader("🧾 Recent Sales")
-    recent_df = fetch("recent_sales", order="sale_date.desc")
-    if not recent_df.empty:
-        recent_df["sale_date"] = pd.to_datetime(recent_df["sale_date"]).dt.strftime("%d %b, %I:%M %p")
-        st.dataframe(recent_df[["sale_date", "item_count", "total", "profit"]],
-                     hide_index=True, use_container_width=True)
-    else:
-        st.info("No sales yet.")
+# ---------------------------------------------------------------------------
+# Recent Sales — full summary, full width
+# ---------------------------------------------------------------------------
+st.subheader("🧾 Recent Sales — Full Summary")
+recent_df = fetch("recent_sales", order="sale_date.desc")
+if not recent_df.empty:
+    recent_df["sale_date"] = pd.to_datetime(recent_df["sale_date"]).dt.strftime("%d %b %Y, %I:%M %p")
+    display_df = recent_df.rename(columns={
+        "id": "Sale #", "sale_date": "Date & Time", "item_count": "Items",
+        "discount": "Discount (PKR)", "total": "Total (PKR)", "profit": "Profit (PKR)",
+    })[["Sale #", "Date & Time", "Items", "Discount (PKR)", "Total (PKR)", "Profit (PKR)"]]
+    st.dataframe(display_df, hide_index=True, use_container_width=True)
+else:
+    st.info("No sales yet.")
 
 st.divider()
 
@@ -141,3 +170,22 @@ with right2:
                      hide_index=True, use_container_width=True)
     else:
         st.info("No bank data yet.")
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# Advance Bookings
+# ---------------------------------------------------------------------------
+st.subheader("📑 Advance Bookings")
+bookings_df = fetch("advance_bookings", order="booking_date.desc")
+if not bookings_df.empty:
+    total_bookings_value = bookings_df["total_amount"].sum()
+    st.metric("Total Bookings Value", f"PKR {total_bookings_value:,.0f}")
+    bookings_df["booking_date"] = pd.to_datetime(bookings_df["booking_date"]).dt.strftime("%d %b %Y, %I:%M %p")
+    display_bookings = bookings_df.rename(columns={
+        "booking_date": "Date", "product_name": "Product", "company_name": "Company",
+        "price": "Price (PKR)", "quantity": "Qty", "total_amount": "Total (PKR)",
+    })[["Date", "Product", "Company", "Price (PKR)", "Qty", "Total (PKR)"]]
+    st.dataframe(display_bookings, hide_index=True, use_container_width=True)
+else:
+    st.info("No advance bookings yet.")
